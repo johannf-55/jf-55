@@ -1,0 +1,4 @@
+TeX Gyre Adventor (Regular, Bold) — GUST e-foundry, licence GUST Font License (GFL, équivalente à la LPPL) :
+redistribution et embarquement libres, y compris commercial. https://www.gust.org.pl/projects/e-foundry/tex-gyre
+Utilisée comme police de repli de « Century Gothic » (métriquement proche d'ITC Avant Garde Gothic) sur les appareils
+qui ne disposent pas de Century Gothic (Android notamment). Sur un PC Windows avec Office, Century Gothic est utilisée en priorité.

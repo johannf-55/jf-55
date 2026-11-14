@@ -1,0 +1,2 @@
+{ "name": "audit-energie-pwa", "version": "0.1.0", "type": "module", "private": true,
+  "scripts": { "test": "node tests/core.test.js", "serve": "node tests/serve.js" } }
