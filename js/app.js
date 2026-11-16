@@ -2,7 +2,7 @@
 import { IdbStore } from './db.js';
 import { FAMILIES, CARRIERS, STATUSES, AUDIT_TYPES, NOTE_CATS, TERRITORIES, GRIDS, KINDS, kindById, kindsOf, uid, newAudit, newUtility, newLink, newNote, newPhoto, utilityLabel, uncSuffix, hoursFromBasis, basisText } from './model.js';
 import { ANSWER_TYPES, YES_NO, effectiveBase, itemsFor, progress, isAnswered, targetLabel, editItem, newItem, resetOverrides, upsert, baseToCsv, decodeCsv, importBaseCsv } from './checklist.js';
-import { makeAuth, DriveRemote } from './drive.js';
+import { makeAuth, SharePointRemote, normalizeConfig, isConfigured } from './sharepoint.js';
 import { syncAll } from './sync-core.js';
 import { renderSynoptic } from './synoptic.js';
 import { exportXlsx, exportCsvZip, exportBackupZip, importBackup, download } from './export.js';
@@ -136,7 +136,7 @@ async function viewAudits() {
       </a>`).join('') : `
       <div class="card empty"><p><b>Aucun audit pour l’instant.</b></p><p>Créez un audit, ou chargez un exemple pour découvrir l’outil.</p>
       <button class="btn" data-act="demo">Charger un audit de démonstration</button></div>`}
-    <p class="muted small" style="text-align:center">Les données sont enregistrées sur cet appareil et fonctionnent sans réseau. Touchez ⟳ pour les synchroniser avec votre Google Drive.</p>`;
+    <p class="muted small" style="text-align:center">Les données sont enregistrées sur cet appareil et fonctionnent sans réseau. Touchez ⟳ pour les synchroniser avec votre SharePoint.</p>`;
 }
 
 // ------------------------------------------------------------------ vue : inventaire + fiche
@@ -314,7 +314,7 @@ function viewBase() {
   const opt = (k, l) => `<option value="${k}" ${k === baseKind ? 'selected' : ''}>${esc(l)} (${count(k)})</option>`;
   main.innerHTML = `<div class="base-wrap">
     <div class="card"><h2>Points de contrôle par type d’utilité</h2>
-      <p class="small muted">Cette base alimente l’onglet « Checklist » de chaque utilité. Vos modifications sont enregistrées sur cet appareil et synchronisées avec votre Drive (fichier <code>AuditEnergie/checklists.json</code>). Pour une mise à jour en masse : exportez en CSV, modifiez dans Excel, enregistrez au format <b>« CSV UTF-8 »</b>, puis réimportez (gardez la colonne <code>id</code> pour que les réponses existantes restent liées).</p>
+      <p class="small muted">Cette base alimente l’onglet « Checklist » de chaque utilité. Vos modifications sont enregistrées sur cet appareil et synchronisées avec votre SharePoint (fichier <code>AuditEnergie/checklists.json</code>). Pour une mise à jour en masse : exportez en CSV, modifiez dans Excel, enregistrez au format <b>« CSV UTF-8 »</b>, puis réimportez (gardez la colonne <code>id</code> pour que les réponses existantes restent liées).</p>
       <label class="field"><span>Type d’utilité</span><select id="baseKind">${opt('*', 'Toutes les utilités (points communs)')}${FAM_ORDER.map((f) => `<optgroup label="${FAMILIES[f].long}">${kindsOf(f).map((k) => opt(k.id, k.label)).join('')}</optgroup>`).join('')}</select></label>
       <div class="row"><button class="btn primary" data-act="baseAdd">＋ Ajouter un point</button><span class="grow"></span>
         <button class="btn" data-act="baseExport">⇩ Exporter (CSV)</button><label class="btn">⇧ Importer (CSV)<input type="file" accept=".csv,text/csv" hidden data-baseimport></label><button class="btn danger" data-act="baseReset">↺ Base par défaut</button></div></div>
@@ -516,7 +516,7 @@ function openPhoto(id) {
   const p = S.photos.find((x) => x.id === id); if (!p) return;
   photoUrl(p).then((url) => {
     const opts = `<option value="">Photo générale du site</option>` + S.utilities.map((u) => `<option value="${u.id}" ${u.id === p.utilityId ? 'selected' : ''}>${esc(utilityLabel(u))}</option>`).join('');
-    dialog(`${url ? `<img class="photo-big" src="${url}" alt="">` : '<div class="empty">Photo pas encore téléchargée depuis Drive — synchronisez.</div>'}
+    dialog(`${url ? `<img class="photo-big" src="${url}" alt="">` : '<div class="empty">Photo pas encore téléchargée depuis SharePoint — synchronisez.</div>'}
       <label class="field" style="margin-top:10px"><span>Légende</span><input type="text" id="pcap" value="${esc(p.caption)}" placeholder="Ex. plaque signalétique, fuite bride…"></label>
       <label class="field"><span>Associée à</span><select id="pu">${opts}</select></label>
       <div class="small muted">${fmtDate(p.takenAt)} · ${p.width}×${p.height} · ${Math.round((p.size || 0) / 1024)} Ko</div>
@@ -628,7 +628,7 @@ const actions = {
   async exportBackup() { toast('Préparation de la sauvegarde…', 20000); const { blob, name } = await exportBackupZip(store, [S.audit.id]); download(blob, name); toast('Sauvegarde prête'); },
   async exportBackupAll() { toast('Préparation de la sauvegarde…', 20000); const ids = (await store.all('audits')).filter((a) => !a.deleted).map((a) => a.id); const { blob, name } = await exportBackupZip(store, ids); download(blob, name); toast('Sauvegarde prête'); },
   async deleteAudit() {
-    if (!(await confirmDlg(`Supprimer l’audit <b>${esc(S.audit.name)}</b> et toutes ses données ? (Il sera aussi marqué supprimé sur Drive à la prochaine synchro.)`))) return;
+    if (!(await confirmDlg(`Supprimer l’audit <b>${esc(S.audit.name)}</b> et toutes ses données ? (Il sera aussi marqué supprimé sur SharePoint à la prochaine synchro.)`))) return;
     await tombstone('audits', S.audit); location.hash = '#/';
   },
   hoursCalc(t, e) { e.preventDefault(); hoursDialog(U(currentUid)); },
@@ -664,30 +664,42 @@ const actions = {
   async demo() { const { loadDemo } = await import('./demo.js'); const id = await loadDemo(store, deviceId, save); location.hash = `#/a/${id}/inv`; },
 };
 
-// ------------------------------------------------------------------ synchronisation Google Drive
-const clientId = () => (localStorage.getItem('cfg_client_id') || window.APP_CONFIG?.googleClientId || '').trim();
+// ------------------------------------------------------------------ synchronisation SharePoint (Microsoft Graph)
+const spConfig = () => {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('cfg_sp') || '{}'); } catch { /* valeurs par défaut */ }
+  return normalizeConfig({ ...(window.APP_CONFIG?.microsoft || {}), ...saved });
+};
 function getRemote() {
-  const id = clientId();
-  if (!remote || authFor !== id) { auth = makeAuth(id, { onConnected: updatePill }); remote = new DriveRemote({ auth, store }); authFor = id; }
+  const cfg = spConfig(), key = JSON.stringify(cfg);
+  if (!remote || authFor !== key) { auth = makeAuth(cfg, { onConnected: updatePill }); remote = new SharePointRemote({ auth, store, config: cfg }); authFor = key; }
   return remote;
 }
 async function doSync({ silent = false } = {}) {
   if (syncing) return;
-  if (!clientId()) { if (!silent) { toast('Renseignez d’abord l’identifiant client Google (⚙ Réglages).'); openSettings(); } return; }
+  if (!isConfigured(spConfig())) { if (!silent) { toast('Renseignez d’abord la connexion SharePoint (⚙ Réglages).'); openSettings(); } return; }
   if (!navigator.onLine) { if (!silent) toast('Hors ligne : vos données restent sur l’appareil et seront synchronisées plus tard.'); return; }
   syncing = true; updatePill();
   try {
+    // Changement de service distant (ex. ancien Google Drive) : on repart d'un état « jamais vu » pour tout comparer
+    if ((await store.metaGet('remoteKind', '')) !== 'sharepoint') { await store.metaSet('seen', {}); await store.metaSet('checkBaseSeen', ''); await store.metaSet('remoteKind', 'sharepoint'); }
     const st = await syncAll(store, getRemote(), { onProgress: (m) => { syncMsg = m; updatePill(); } });
     const parts = [st.pulled && `${st.pulled} audit(s) reçu(s)`, st.pushed && `${st.pushed} envoyé(s)`, st.photosUp && `${st.photosUp} photo(s) envoyée(s)`, st.photosDown && `${st.photosDown} photo(s) reçue(s)`].filter(Boolean);
     toast(st.errors.length ? `Synchro partielle : ${st.errors[0]}` : parts.length ? 'Synchronisé — ' + parts.join(', ') : 'Tout est à jour');
-  } catch (e) { toast(e.code === 'AUTH' ? `Connexion Google nécessaire : ${e.message}` : `Échec de la synchro : ${e.message}`, 5000); }
+  } catch (e) {
+    if (e.code === 'AUTH' && e.login) {
+      if (!silent) { toast('Connexion Microsoft nécessaire — ouverture de la page de connexion…', 3000); syncing = false; updatePill(); return auth.login(); }
+    } else if (!silent || e.code !== 'AUTH') toast(e.code === 'AUTH' ? `Connexion Microsoft : ${e.message}` : `Échec de la synchro : ${e.message}`, 6000);
+  }
   finally { syncing = false; syncMsg = ''; await reloadBase(); updatePill(); if (!$('#dlg').open) await refreshViewSafe(); }
 }
 // Évite de détruire une saisie en cours : on ne recharge la vue que si aucun champ n'a le focus
 const refreshViewSafe = async () => { const a = document.activeElement; if (a && /INPUT|TEXTAREA|SELECT/.test(a.tagName)) return; await route({ keep: true }); };
 function scheduleAutoSync() {
   clearTimeout(autoTimer);
-  if (!auth?.connected || !navigator.onLine) return; // jeton Google valide 1 h : pas de fenêtre de connexion sans geste de l'utilisateur
+  if (!isConfigured(spConfig()) || !navigator.onLine) return;
+  getRemote();
+  if (!auth.connected) return; // pas de passage par la page de connexion Microsoft sans geste de l'utilisateur
   autoTimer = setTimeout(() => doSync({ silent: true }), 20000);
 }
 
@@ -700,12 +712,18 @@ function setTheme(t) {
 async function openSettings() {
   const est = await navigator.storage?.estimate?.().catch(() => null);
   const persisted = await navigator.storage?.persisted?.().catch(() => false);
-  const root = await store.metaGet('driveRoot', '');
+  const root = await store.metaGet('remoteRoot', '');
+  const c = spConfig();
   dialog(`<div class="brand-card" style="margin-bottom:12px"><img src="icons/logo-couleur.png" alt="Carbone Ingénierie"></div><h2>Réglages</h2>
-    <div class="card"><h2>Synchronisation Google Drive</h2>
-      <label class="field"><span>Identifiant client OAuth Google</span><input type="text" id="cid" placeholder="xxxxxxxx.apps.googleusercontent.com" value="${esc(clientId())}"></label>
-      <p class="small muted">Créé une fois dans Google Cloud Console (voir le guide de déploiement). Les données sont écrites dans votre Drive, dossier <code>AuditEnergie</code>${root ? ` — <a href="https://drive.google.com/drive/folders/${root}" target="_blank" rel="noopener">ouvrir</a>` : ''}.</p>
-      <button class="btn primary block" id="sg">Enregistrer et synchroniser</button></div>
+    <div class="card"><h2>Synchronisation SharePoint</h2>
+      <label class="field"><span>ID d’application (client)</span><input type="text" id="spc" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="${esc(c.clientId)}"></label>
+      <label class="field"><span>ID de l’annuaire (tenant) ou domaine</span><input type="text" id="spt" placeholder="carbone-ingenierie.fr" value="${esc(c.tenant)}"></label>
+      <label class="field"><span>Adresse du site SharePoint</span><input type="text" id="sps" placeholder="https://…sharepoint.com/sites/…" value="${esc(c.siteUrl)}"></label>
+      <label class="field"><span>Bibliothèque de documents</span><input type="text" id="spl" placeholder="Documents" value="${esc(c.library)}"></label>
+      <label class="field"><span>Dossier de l’application</span><input type="text" id="spf" placeholder="AuditEnergie" value="${esc(c.folder)}"></label>
+      <p class="small muted">Créés une fois dans Microsoft Entra (voir le guide de déploiement). Adresse de redirection à déclarer : <code>${esc(location.origin + location.pathname)}</code>. Les données sont écrites dans le dossier <code>${esc(c.folder)}</code> de la bibliothèque${root ? ` — <a href="${esc(root)}" target="_blank" rel="noopener">ouvrir</a>` : ''}.</p>
+      <button class="btn primary block" id="sg">Enregistrer et synchroniser</button>
+      ${auth?.connected ? '<button class="btn small" id="sout" style="margin-top:8px">Se déconnecter de Microsoft</button>' : ''}</div>
     <div class="card"><h2>Affichage</h2>
       <div class="row"><button class="chip ${theme() === 'dark' ? 'on' : ''}" data-theme="dark">🌙 Sombre</button><button class="chip ${theme() === 'light' ? 'on' : ''}" data-theme="light">☀ Clair</button></div></div>
     <div class="card"><h2>Base de checklists</h2><p class="small muted">Points de contrôle proposés pour chaque type d’utilité : ajout, modification, import / export Excel.</p><button class="btn block" id="baseBtn">☑ Modifier la base de checklists</button></div>
@@ -715,10 +733,15 @@ async function openSettings() {
       ${persisted ? '' : '<button class="btn small" id="persist" style="margin-top:8px">Demander le stockage persistant</button>'}
       ${installEvt ? '<button class="btn small" id="install" style="margin-top:8px">Installer l’application</button>' : ''}</div>
     <div class="row"><button class="btn" id="demoBtn">Charger l’audit de démonstration</button><span class="grow"></span><button class="btn primary" data-close>Fermer</button></div>
-    <p class="small muted">Appareil <code>${deviceId.slice(0, 8)}</code> · version prototype 0.3</p>`, (d) => {
+    <p class="small muted">Appareil <code>${deviceId.slice(0, 8)}</code> · version prototype 0.4</p>`, (d) => {
     d.querySelectorAll('[data-theme]').forEach((b) => { b.onclick = () => { setTheme(b.dataset.theme); d.querySelectorAll('[data-theme]').forEach((x) => x.classList.toggle('on', x === b)); }; });
     $('#baseBtn', d).onclick = () => { d.close(); actions.openBase(); };
-    $('#sg', d).onclick = () => { localStorage.setItem('cfg_client_id', $('#cid', d).value.trim()); d.close(); doSync(); };
+    $('#sg', d).onclick = () => {
+      const v = (id) => $(id, d).value;
+      localStorage.setItem('cfg_sp', JSON.stringify({ clientId: v('#spc'), tenant: v('#spt'), siteUrl: v('#sps'), library: v('#spl'), folder: v('#spf') }));
+      d.close(); doSync();
+    };
+    $('#sout', d)?.addEventListener('click', () => { auth.logout(); toast('Déconnecté de Microsoft'); d.close(); updatePill(); });
     $('#persist', d)?.addEventListener('click', async () => { const ok = await navigator.storage.persist(); toast(ok ? 'Stockage persistant accordé' : 'Refusé par le navigateur : installez d’abord l’application'); d.close(); });
     $('#install', d)?.addEventListener('click', async () => { installEvt.prompt(); installEvt = null; d.close(); });
     $('#demoBtn', d).onclick = () => { d.close(); actions.demo(); };
@@ -767,5 +790,10 @@ addEventListener('pagehide', () => { /* IndexedDB est déjà écrit à chaque mo
   await reloadBase();
   updatePill(); setInterval(updatePill, 60000);
   await route();
+  if (isConfigured(spConfig())) { // retour de la page de connexion Microsoft ?
+    const r = await getRemote() && await auth.handleRedirect();
+    if (r?.error) toast(`Connexion Microsoft : ${r.error}`, 8000);
+    else if (r?.ok) { toast('Connecté à Microsoft'); doSync(); }
+  }
   window.__app = { store, doSync, S, base: () => CB }; // utile pour les tests automatisés
 })();

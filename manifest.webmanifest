@@ -1,7 +1,7 @@
 {
   "name": "Audit énergie — Carbone Ingénierie",
   "short_name": "Audit énergie",
-  "description": "Relevé terrain d'audit énergétique industriel : utilités, réseaux, photos, commentaires. Hors ligne, synchronisé avec Google Drive.",
+  "description": "Relevé terrain d'audit énergétique industriel : utilités, réseaux, photos, commentaires. Hors ligne, synchronisé avec SharePoint.",
   "lang": "fr",
   "start_url": "./",
   "scope": "./",
